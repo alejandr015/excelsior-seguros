@@ -87,7 +87,7 @@ interface Deal {
   pagado: boolean; evidencia_pago: string; cuotas_total: number; cuotas_pagadas: number;
   fecha_corte: string; fecha_perdido: string; activo: boolean;
   nit?: string; valor_cotizado?: string; promedio_prima?: string; ramo?: string; contacto_nombre?: string; contacto_tel?: string;
-  cotizaciones?: Cotizacion[]; notas_analisis?: string; analisis_ia?: string | Record<string, string>; analisis_ia_fecha?: string;
+  cotizaciones?: Cotizacion[]; notas_analisis?: string;
   propuesta_enviada?: boolean; propuesta_archivos?: { nombre: string; fecha: string; aseguradora?: string }[]; propuesta_fecha?: string;
   condiciones_rechazadas?: { aseguradora: string; motivo: string; evidencia?: string; fecha: string }[];
   historial_cuotas?: { cuota: number; fecha_vencimiento: string; fecha_pago: string; evidencia: string }[];
@@ -714,64 +714,13 @@ function DealCard({ deal, onSave, client, onLocalUpdate }: { deal: Deal; onSave:
           {/* ═══ 4. ANÁLISIS TÉCNICO (idx=3) ═══ */}
           {(mappedEtapa === "analisis_tecnico" || idx > 3 || mappedEtapa === "perdido") && (
             <StageSection title="Análisis Técnico" icon={<BarChart3 size={16} />} color="#f59e0b" glow="rgba(245,158,11,0.12)">
-              {/* ═══ ANÁLISIS GENERADO POR IA (desde el chat AI o avance automático) ═══ */}
-              {(() => {
-                const ana = deal.analisis_ia;
-                if (!ana) return null;
-                // Caso 1: objeto JSON { "Sura": "...", "Seguros Mundial": "..." } (nuevo formato por aseguradora)
-                if (typeof ana === "object" && ana !== null) {
-                  const aseguradoras = Object.keys(ana);
-                  if (aseguradoras.length === 0) return null;
-                  const fechaStr = deal.analisis_ia_fecha ? (() => { try { return new Date(deal.analisis_ia_fecha!).toLocaleString("es-CO", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }); } catch { return ""; } })() : "";
-                  return (
-                    <div className="mb-4 space-y-3">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <BarChart3 size={14} className="text-[#f59e0b]" />
-                          <span className="text-[12px] uppercase font-semibold tracking-wide text-[#f59e0b]">Análisis Técnico Individual por Aseguradora</span>
-                        </div>
-                        {fechaStr && <span className="text-[10px] text-[var(--text-muted)]">{fechaStr}</span>}
-                      </div>
-                      {aseguradoras.map((aseg) => (
-                        <div key={aseg} className="p-4 rounded-xl border border-[#f59e0b]/30" style={{ background: "linear-gradient(135deg, rgba(245,158,11,0.08), rgba(245,158,11,0.02))" }}>
-                          <div className="flex items-center gap-2 mb-2 pb-2 border-b border-[#f59e0b]/20">
-                            <Shield size={14} className="text-[#f59e0b]" />
-                            <span className="text-[14px] font-bold text-[#f59e0b]">{aseg}</span>
-                          </div>
-                          <div className="text-[13px] leading-relaxed whitespace-pre-wrap text-[var(--text-primary)] max-h-[350px] overflow-y-auto pr-2">
-                            {(ana as Record<string, string>)[aseg]}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  );
-                }
-                // Caso 2: string (formato legacy, retrocompatibilidad)
-                if (typeof ana === "string" && ana.trim()) {
-                  return (
-                    <div className="mb-4 p-4 rounded-xl border border-[#f59e0b]/30" style={{ background: "linear-gradient(135deg, rgba(245,158,11,0.08), rgba(245,158,11,0.02))" }}>
-                      <div className="flex items-center justify-between mb-3">
-                        <div className="flex items-center gap-2">
-                          <BarChart3 size={14} className="text-[#f59e0b]" />
-                          <span className="text-[12px] uppercase font-semibold tracking-wide text-[#f59e0b]">Análisis Técnico Generado por IA</span>
-                        </div>
-                        {deal.analisis_ia_fecha && (
-                          <span className="text-[10px] text-[var(--text-muted)]">
-                            {(() => { try { return new Date(deal.analisis_ia_fecha).toLocaleString("es-CO", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }); } catch { return ""; } })()}
-                          </span>
-                        )}
-                      </div>
-                      <div className="text-[13px] leading-relaxed whitespace-pre-wrap text-[var(--text-primary)] max-h-[400px] overflow-y-auto pr-2">
-                        {ana}
-                      </div>
-                    </div>
-                  );
-                }
-                return null;
-              })()}
+              <p className="text-[13px] text-[var(--text-muted)] mb-3">Cotizaciones extraídas automáticamente por IA. Verifica y ajusta si es necesario.</p>
+              <div className="space-y-2 mb-3 max-h-[200px] overflow-y-auto">
+                {(deal.cotizaciones || []).length === 0 ? <p className="text-[14px] text-[var(--text-muted)] italic py-2">Sin cotizaciones registradas</p> : (deal.cotizaciones || []).map((c, i) => (<div key={i} className="flex items-center gap-3 bg-[var(--surface)] rounded-xl px-4 py-3 border border-[var(--border)]"><DollarSign size={14} className="text-[#f59e0b] shrink-0" /><div className="flex-1"><span className="text-[13px] font-semibold">{c.aseguradora}</span><span className="text-[12px] text-[var(--text-muted)] ml-2">{/^\$|COP|USD|EUR|US\$|€/.test(c.valor || "") ? c.valor : `$ ${c.valor}`}</span>{c.coberturas && <p className="text-[12px] text-[var(--text-muted)]">{c.coberturas}</p>}</div><span className="text-[11px] text-[var(--text-muted)]">{c.fecha}</span></div>))}
+              </div>
               {mappedEtapa !== "perdido" && (
                 <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-4">
-                  {/* Columna izquierda: agregar cotización (solo formulario, sin lista) */}
+                  {/* Columna izquierda: agregar cotización */}
                   <div className="space-y-2">
                     <div className="grid grid-cols-[1fr_120px_1fr_auto] gap-2">
                       <input className="bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-3 text-[14px] outline-none" value={newCotAseg} onChange={e => setNewCotAseg(e.target.value)} placeholder="Aseguradora" />

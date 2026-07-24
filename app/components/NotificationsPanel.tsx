@@ -80,14 +80,46 @@ export default function NotificationsPanel({ isOpen, onClose, onGestionar }: { i
   const [showAdvFilters, setShowAdvFilters] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
 
-  const fetchAlertas = useCallback(async () => {
+  const fetchAlertas = useCallback(async (filtros?: { fecha_desde?: string; fecha_hasta?: string }) => {
     setLoading(true); setError("");
-    try { const res = await fetch(N8N_API_ALERTAS); const json = await res.json(); setData(json); setCompletedIds(new Set()); setReprogrammedIds(new Map()); setGestionandoIds(new Set()); }
+    try {
+      let url = N8N_API_ALERTAS;
+      if (filtros && (filtros.fecha_desde || filtros.fecha_hasta)) {
+        const params = new URLSearchParams();
+        if (filtros.fecha_desde) params.set("fecha_desde", filtros.fecha_desde);
+        if (filtros.fecha_hasta) params.set("fecha_hasta", filtros.fecha_hasta);
+        url = `${N8N_API_ALERTAS}?${params.toString()}`;
+      }
+      const res = await fetch(url);
+      const json = await res.json();
+      setData(json); setCompletedIds(new Set()); setReprogrammedIds(new Map()); setGestionandoIds(new Set());
+    }
     catch { setError("No se pudieron cargar las alertas"); }
     finally { setLoading(false); }
   }, []);
 
-  useEffect(() => { if (isOpen) { fetchAlertas(); setView("active"); } }, [isOpen, fetchAlertas]);
+  // setView solo cuando se abre el panel
+  useEffect(() => { if (isOpen) setView("active"); }, [isOpen]);
+
+  // Re-fetch cuando cambien los filtros de fecha (mes o rango)
+  useEffect(() => {
+    if (!isOpen) return;
+    let fecha_desde = "", fecha_hasta = "";
+    if (mesFilter) {
+      const [y, m] = mesFilter.split("-").map(Number);
+      fecha_desde = `${mesFilter}-01`;
+      const ultimoDia = new Date(y, m, 0).getDate();
+      fecha_hasta = `${mesFilter}-${String(ultimoDia).padStart(2, "0")}`;
+    } else if (rangoDesde || rangoHasta) {
+      if (rangoDesde) fecha_desde = rangoDesde;
+      if (rangoHasta) fecha_hasta = rangoHasta;
+    }
+    if (fecha_desde || fecha_hasta) {
+      fetchAlertas({ fecha_desde, fecha_hasta });
+    } else {
+      fetchAlertas();
+    }
+  }, [mesFilter, rangoDesde, rangoHasta, isOpen, fetchAlertas]);
   useEffect(() => {
     const handler = (e: MouseEvent) => { if (panelRef.current && !panelRef.current.contains(e.target as Node)) onClose(); };
     if (isOpen) setTimeout(() => document.addEventListener("mousedown", handler), 100);
@@ -338,7 +370,7 @@ export default function NotificationsPanel({ isOpen, onClose, onGestionar }: { i
           {headerContent()}
           <div className="flex items-center gap-1.5">
             {view === "active" && archivedAlerts.length > 0 && (<button onClick={()=>setView("trash")} className="relative p-2 rounded-lg hover:bg-[var(--surface-light)] text-[var(--text-muted)]" title="Papelera"><Trash2 size={14}/><span className="absolute -top-0.5 -right-0.5 w-4 h-4 rounded-full bg-[var(--red)] text-white text-[8px] font-bold flex items-center justify-center">{archivedAlerts.length}</span></button>)}
-            {view === "active" && <button onClick={fetchAlertas} className="p-2 rounded-lg hover:bg-[var(--surface-light)] text-[var(--text-muted)]"><RefreshCw size={14} className={loading?"animate-spin":""}/></button>}
+            {view === "active" && <button onClick={()=>fetchAlertas()} className="p-2 rounded-lg hover:bg-[var(--surface-light)] text-[var(--text-muted)]"><RefreshCw size={14} className={loading?"animate-spin":""}/></button>}
             <button onClick={onClose} className="p-2 rounded-lg hover:bg-[var(--surface-light)] text-[var(--text-muted)]"><X size={16}/></button>
           </div>
         </div>

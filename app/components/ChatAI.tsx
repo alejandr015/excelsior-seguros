@@ -1,11 +1,18 @@
 "use client";
 import { useState, useRef, useEffect } from "react";
-import { Send, Paperclip, X, FileText, Upload } from "lucide-react";
+import { Send, Paperclip, X, FileText, Upload, BarChart3 } from "lucide-react";
+
+interface AnalisisData {
+  texto: string;
+  footer?: string;
+  negocio_id?: string;
+}
 
 interface Message {
   role: "user" | "assistant";
   text: string;
   files?: { name: string; size: number }[];
+  analisis?: AnalisisData;
 }
 
 interface PendingCotizacionUpload {
@@ -225,6 +232,18 @@ export default function ChatAI() {
 
       setMessages((prev) => {
         const filtered = prev.filter((m) => !m.text.startsWith("📤 Subiendo"));
+        // Si la respuesta es un análisis IA, adjuntar estructura especial al mensaje
+        if (data.type === "analisis_ia" && data.analisis) {
+          return [...filtered, {
+            role: "assistant",
+            text: botResponse,
+            analisis: {
+              texto: String(data.analisis),
+              footer: data.footer ? String(data.footer) : undefined,
+              negocio_id: data.negocio_id ? String(data.negocio_id) : undefined
+            }
+          }];
+        }
         return [...filtered, { role: "assistant", text: botResponse }];
       });
     } catch (error) {
@@ -290,12 +309,50 @@ export default function ChatAI() {
       <div className="flex-1 overflow-y-auto flex flex-col gap-4 pb-4 relative">
         {messages.map((msg, i) => (
           <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"} animate-slide-up`}>
-            <div className={`max-w-[70%] px-4 py-3.5 text-sm leading-relaxed whitespace-pre-line ${
+            <div className={`${msg.analisis ? "max-w-[90%] w-full" : "max-w-[70%]"} ${msg.analisis ? "" : "px-4 py-3.5"} text-sm leading-relaxed whitespace-pre-line ${
               msg.role === "user"
-                ? "bg-gradient-to-r from-[var(--accent)] to-[var(--accent-dark)] text-[var(--bg)] rounded-2xl rounded-br-sm"
-                : "bg-[var(--surface)] text-[var(--text-primary)] border border-[var(--border)] rounded-2xl rounded-bl-sm"
+                ? "bg-gradient-to-r from-[var(--accent)] to-[var(--accent-dark)] text-[var(--bg)] rounded-2xl rounded-br-sm px-4 py-3.5"
+                : msg.analisis
+                  ? ""
+                  : "bg-[var(--surface)] text-[var(--text-primary)] border border-[var(--border)] rounded-2xl rounded-bl-sm"
             }`}>
-              {msg.text}
+              {!msg.analisis && msg.text}
+              {msg.analisis && (
+                <div className="flex flex-col gap-3">
+                  {/* Header corto del análisis */}
+                  <div className="px-4 py-3 bg-[var(--surface)] border border-[var(--border)] rounded-2xl rounded-bl-sm text-[var(--text-primary)]">
+                    {msg.text}
+                  </div>
+                  {/* Panel destacado con el análisis completo */}
+                  <div className="rounded-2xl border border-[#f59e0b]/40 overflow-hidden"
+                       style={{ background: "linear-gradient(135deg, rgba(245,158,11,0.08), rgba(245,158,11,0.02))" }}>
+                    <div className="flex items-center justify-between px-4 py-2.5 border-b border-[#f59e0b]/30 bg-[#f59e0b]/10">
+                      <div className="flex items-center gap-2">
+                        <BarChart3 size={14} className="text-[#f59e0b]" />
+                        <span className="text-[11px] uppercase font-semibold tracking-wider text-[#f59e0b]">
+                          Análisis Técnico IA
+                        </span>
+                        {msg.analisis.negocio_id && (
+                          <span className="text-[10px] text-[var(--text-muted)] font-mono">
+                            {msg.analisis.negocio_id}
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[10px] text-[var(--text-muted)]">
+                        ✅ Guardado en el negocio
+                      </div>
+                    </div>
+                    <div className="px-4 py-3 text-[13px] leading-relaxed whitespace-pre-wrap text-[var(--text-primary)] max-h-[420px] overflow-y-auto">
+                      {msg.analisis.texto}
+                    </div>
+                    {msg.analisis.footer && (
+                      <div className="px-4 py-2.5 border-t border-[#f59e0b]/20 bg-[#f59e0b]/5 text-[11px] italic text-[var(--text-muted)] whitespace-pre-wrap">
+                        {msg.analisis.footer}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
               {msg.files && msg.files.length > 0 && (
                 <div className="mt-2 pt-2 border-t border-black/10 flex flex-col gap-1">
                   {msg.files.map((f, j) => (
