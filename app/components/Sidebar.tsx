@@ -9,7 +9,7 @@ const ALL_SIDEBAR_ITEMS = [
   { id: "clients", label: "Prospectos / Clientes", icon: Users },
   { id: "pipeline", label: "Pipeline", icon: GitBranch },
   { id: "negocios", label: "Negocios", icon: Briefcase },
-  { id: "chat", label: "Chat AI", icon: MessageSquare },
+  // { id: "chat", label: "Chat AI", icon: MessageSquare },  // DESACTIVADO - flujo movido a manual
   { id: "documents", label: "Documentos", icon: Upload },
   { id: "analytics", label: "Reportes", icon: BarChart3 },
   { id: "formularios", label: "Formularios", icon: FileText },

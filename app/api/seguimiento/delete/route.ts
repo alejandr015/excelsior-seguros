@@ -39,17 +39,21 @@ function notaSinAutor(nota: string): string {
 
 export async function POST(req: NextRequest) {
   try {
-    const { negocio_id, fecha, nota } = await req.json();
+    const { negocio_id, fecha, nota, id } = await req.json();
     if (!negocio_id || !fecha || !nota) {
       return NextResponse.json({ ok: false, error: "Faltan campos: negocio_id, fecha, nota" }, { status: 400 });
     }
 
     // 1) Borrar el seguimiento
-    const segParams = new URLSearchParams({
-      negocio_id: `eq.${negocio_id}`,
-      fecha: `eq.${fecha}`,
-      nota: `eq.${nota}`,
-    });
+    // Si viene `id` (row uuid de la tabla Seguimientos), usar ese para borrar EXACTAMENTE 1 fila.
+    // Si no viene (compat legacy), borrar por negocio_id + fecha + nota (puede afectar múltiples si hay duplicados).
+    const segParams = id
+      ? new URLSearchParams({ id: `eq.${id}` })
+      : new URLSearchParams({
+          negocio_id: `eq.${negocio_id}`,
+          fecha: `eq.${fecha}`,
+          nota: `eq.${nota}`,
+        });
     const rSeg = await fetch(`${SB}/Seguimientos?${segParams}`, {
       method: "DELETE",
       headers: sbHeaders,
@@ -59,9 +63,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: `Supabase Seguimientos ${rSeg.status}: ${txt.substring(0, 200)}` }, { status: rSeg.status });
     }
 
-    // 2) Borrar SOLO la alerta cuya descripción contenga la nota específica del seguimiento.
+    // 2) Borrar SOLO UNA alerta cuya descripción contenga la nota específica del seguimiento.
     //    WF-20 crea la alerta con descripcion: `Seguimiento ${tipo_poliza}: ${nota_sin_prefijo}`.
-    //    Para no tocar otras alertas con la misma fecha, filtramos por descripcion ilike *nota*.
+    //    Para no tocar otras alertas con la misma fecha, filtramos por descripcion ilike *nota* y
+    //    borramos SOLO la primera coincidencia (la más antigua) — así si hay duplicados en Recordatorios,
+    //    solo se elimina 1 por cada seguimiento eliminado.
     let alertasEliminadas = 0;
     const fechaISO = toISO(fecha);
     const notaLimpia = notaSinAutor(nota);
@@ -74,31 +80,32 @@ export async function POST(req: NextRequest) {
           .substring(0, 100);     // Truncar para evitar URLs muy largas
 
         if (notaForFilter.length >= 3) {
-          // Primero buscar las alertas que coinciden con todos los criterios
+          // Primero buscar las alertas que coinciden con todos los criterios, ordenadas por fecha de creación
           const checkParams = new URLSearchParams({
             negocio_id: `eq.${negocio_id}`,
             fecha_alerta: `eq.${fechaISO}`,
             activa: `eq.true`,
             descripcion: `ilike.*${notaForFilter}*`,
             select: "recordatorio_id",
+            order: "created_at.asc",
           });
           const rCheck = await fetch(`${SB}/Recordatorios?${checkParams}`, {
             headers: { apikey: KEY, Authorization: `Bearer ${KEY}` },
           });
           if (rCheck.ok) {
             const arr = (await rCheck.json()) as Array<{ recordatorio_id: string }>;
-            alertasEliminadas = arr.length;
-
-            // Eliminar SOLO esos recordatorio_id específicos para máxima precisión
+            // Eliminar SOLO la primera coincidencia (la más antigua) para no borrar todas si hay duplicados.
+            // Esto es 1 alerta borrada por cada 1 seguimiento borrado — cardinalidad 1:1.
             if (arr.length > 0) {
-              const ids = arr.map((a) => a.recordatorio_id).join(",");
+              const idToDelete = arr[0].recordatorio_id;
               const deleteParams = new URLSearchParams({
-                recordatorio_id: `in.(${ids})`,
+                recordatorio_id: `eq.${idToDelete}`,
               });
               await fetch(`${SB}/Recordatorios?${deleteParams}`, {
                 method: "DELETE",
                 headers: sbHeaders,
               });
+              alertasEliminadas = 1;
             }
           }
         }
@@ -112,6 +119,7 @@ export async function POST(req: NextRequest) {
       alertas_eliminadas: alertasEliminadas,
       fecha_iso: fechaISO,
       nota_limpia: notaLimpia,
+      metodo: id ? "por_id" : "por_fecha_nota",
     });
   } catch (e) {
     return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : String(e) }, { status: 500 });

@@ -82,12 +82,13 @@ interface Cotizacion { aseguradora: string; valor: string; coberturas: string; f
 interface Deal {
   id: string; cedula: string; tipo_poliza: string; aseguradora: string; etapa: Stage;
   fecha_creacion: string; fecha_actualizacion: string; fecha_limite: string; observacion: string;
-  seguimientos: { fecha: string; nota: string; alert_id?: string }[];
+  seguimientos: { id?: string; fecha: string; nota: string; alert_id?: string }[];
   caratula: string; modalidad_pago: string; fecha_limite_pago: string;
   pagado: boolean; evidencia_pago: string; cuotas_total: number; cuotas_pagadas: number;
   fecha_corte: string; fecha_perdido: string; activo: boolean;
   nit?: string; valor_cotizado?: string; promedio_prima?: string; ramo?: string; contacto_nombre?: string; contacto_tel?: string;
   cotizaciones?: Cotizacion[]; notas_analisis?: string; analisis_ia?: string | Record<string, string>; analisis_ia_fecha?: string;
+  cuadros_comparativos?: { nombre: string; fecha: string; drive_id?: string; autor?: string }[];
   propuesta_enviada?: boolean; propuesta_archivos?: { nombre: string; fecha: string; aseguradora?: string }[]; propuesta_fecha?: string;
   condiciones_rechazadas?: { aseguradora: string; motivo: string; evidencia?: string; fecha: string }[];
   historial_cuotas?: { cuota: number; fecha_vencimiento: string; fecha_pago: string; evidencia: string }[];
@@ -172,6 +173,9 @@ function DealCard({ deal, onSave, client, onLocalUpdate }: { deal: Deal; onSave:
   const [uploadingCuota, setUploadingCuota] = useState<number | null>(null);
   // ═══ Documentos del cliente (CC, RUT, RUNT, etc) ═══
   const docsClienteRef = useRef<HTMLInputElement>(null);
+  const cuadroCompRef = useRef<HTMLInputElement>(null);
+  // Ref atómico para bloquear duplicados en addSeg (más confiable que useState porque es síncrono)
+  const addSegLockRef = useRef(false);
   const [uploadingDocsCliente, setUploadingDocsCliente] = useState(false);
   const [deleteDocCliente, setDeleteDocCliente] = useState<{ idx: number; nombre: string } | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<{ idx: number; nombre: string; aseg?: string } | null>(null);
@@ -328,14 +332,43 @@ function DealCard({ deal, onSave, client, onLocalUpdate }: { deal: Deal; onSave:
   // Auto-load alerts when card is expanded
   useEffect(() => { if (exp && !negAlertsLoaded) loadNegocioAlerts(); }, [exp]);
 
-  const delSeg = async (s: { fecha: string; nota: string }) => {
-    const restantes = deal.seguimientos.filter(x => !(x.fecha === s.fecha && x.nota === s.nota));
+  // Global paste listener: captura Ctrl+V cuando el modal "No presenta" está abierto,
+  // aunque el foco no esté en el div dropzone (Win+Shift+S deja imagen en clipboard).
+  useEffect(() => {
+    if (!noCondAseg) return;
+    const handleGlobalPaste = async (e: ClipboardEvent) => {
+      // Si el foco está en un input/textarea (motivo), no interceptamos el paste
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      for (const item of Array.from(items)) {
+        if (item.type.startsWith("image/")) {
+          e.preventDefault();
+          const file = item.getAsFile();
+          if (!file) continue;
+          const base64 = await new Promise<string>((res) => { const r = new FileReader(); r.onload = () => res((r.result as string).split(",")[1]); r.readAsDataURL(file); });
+          setNoCondImg({ name: `evidencia_${noCondAseg.replace(/\s+/g, "_")}_${Date.now()}.png`, base64, mimeType: file.type });
+          break;
+        }
+      }
+    };
+    document.addEventListener("paste", handleGlobalPaste);
+    return () => document.removeEventListener("paste", handleGlobalPaste);
+  }, [noCondAseg]);
+
+  const delSeg = async (s: { id?: string; fecha: string; nota: string }) => {
+    // Filtro local: si tiene id, borrar por id (elimina UNA sola row del UI).
+    // Si no tiene id (seguimiento recién creado que aún no se ha recargado), fallback a fecha+nota.
+    const restantes = s.id
+      ? deal.seguimientos.filter(x => x.id !== s.id)
+      : deal.seguimientos.filter(x => !(x.fecha === s.fecha && x.nota === s.nota));
     onLocalUpdate?.({ id: deal.id, seguimientos: restantes });
     try {
       await fetch("/api/seguimiento/delete", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ negocio_id: deal.id, fecha: s.fecha, nota: s.nota }),
+        body: JSON.stringify({ negocio_id: deal.id, fecha: s.fecha, nota: s.nota, id: s.id || null }),
       });
     } catch {}
     // Completar alertas pendientes de "Gestionar" para este cliente
@@ -343,30 +376,40 @@ function DealCard({ deal, onSave, client, onLocalUpdate }: { deal: Deal; onSave:
   };
 
   const addSeg = async () => {
-    if (segSaving) return; // Prevent double click
+    // Bloqueo ATÓMICO con useRef (síncrono, a diferencia de useState). Si el user clickea 3 veces
+    // seguidas o combina Enter+click, solo la primera pasa. Las demás retornan inmediatamente.
+    if (addSegLockRef.current) return;
     if (!newSegFecha) { setSegError("La fecha es obligatoria"); return; }
     if (!newSegNota.trim()) { setSegError("La observación es obligatoria"); return; }
+    addSegLockRef.current = true;
     setSegSaving(true); setSegError(""); setAdvanceError(""); setSegSuccess("");
-    const fechaFormatted = new Date(newSegFecha + "T00:00:00").toLocaleDateString("es-CO");
-    // Prefijar la nota con el nombre del usuario para que todos vean quién la escribió
-    let userName = "";
     try {
-      const u = typeof window !== "undefined" ? localStorage.getItem("excelsior-user") : null;
-      if (u) { const parsed = JSON.parse(u); userName = parsed.nombre || parsed.email || ""; }
-    } catch {}
-    const notaConAutor = userName ? `[${userName}] ${newSegNota}` : newSegNota;
-    // 1) Crear alerta de recordatorio para esta fecha
-    try { await wf20({ action: "create_alert", cedula: deal.cedula, negocio_id: deal.id, descripcion: `Seguimiento ${deal.tipo_poliza}: ${newSegNota}`, fecha: newSegFecha }); } catch {}
-    // 2) Guardar el seguimiento en Supabase (queda en historial visible para todos)
-    try { await wf20({ action: "save_seguimiento_from_alert", cedula: deal.cedula, negocio_id: deal.id, nota: notaConAutor, fecha: fechaFormatted }); } catch {}
-    // 3) Actualización optimista del estado local: agrega el seguimiento sin recargar la página
-    onLocalUpdate?.({ id: deal.id, seguimientos: [...deal.seguimientos, { fecha: fechaFormatted, nota: notaConAutor }] });
-    setSegSuccess(`Seguimiento agregado para ${fechaFormatted}`);
-    setTimeout(() => setSegSuccess(""), 4000);
-    setNewSegNota(""); setNewSegFecha(new Date().toISOString().split("T")[0]);
-    setSegSaving(false);
-    // Completar alertas pendientes de "Gestionar" para este cliente
-    completeAlertAfterChange(client.cedula).catch(() => {});
+      const fechaFormatted = new Date(newSegFecha + "T00:00:00").toLocaleDateString("es-CO");
+      // Prefijar la nota con el nombre del usuario para que todos vean quién la escribió
+      let userName = "";
+      try {
+        const u = typeof window !== "undefined" ? localStorage.getItem("excelsior-user") : null;
+        if (u) { const parsed = JSON.parse(u); userName = parsed.nombre || parsed.email || ""; }
+      } catch {}
+      const notaConAutor = userName ? `[${userName}] ${newSegNota}` : newSegNota;
+      // 1) Crear alerta de recordatorio para esta fecha
+      try { await wf20({ action: "create_alert", cedula: deal.cedula, negocio_id: deal.id, descripcion: `Seguimiento ${deal.tipo_poliza}: ${newSegNota}`, fecha: newSegFecha }); } catch {}
+      // 2) Guardar el seguimiento en Supabase (queda en historial visible para todos)
+      try { await wf20({ action: "save_seguimiento_from_alert", cedula: deal.cedula, negocio_id: deal.id, nota: notaConAutor, fecha: fechaFormatted }); } catch {}
+      // 3) Actualización optimista del estado local: agrega el seguimiento sin recargar la página.
+      //    El id llegará en el próximo refresh; hasta entonces el borrado usa fecha+nota (compatible con backend).
+      onLocalUpdate?.({ id: deal.id, seguimientos: [...deal.seguimientos, { fecha: fechaFormatted, nota: notaConAutor }] });
+      setSegSuccess(`Seguimiento agregado para ${fechaFormatted}`);
+      setTimeout(() => setSegSuccess(""), 4000);
+      setNewSegNota(""); setNewSegFecha(new Date().toISOString().split("T")[0]);
+      // Completar alertas pendientes de "Gestionar" para este cliente
+      completeAlertAfterChange(client.cedula).catch(() => {});
+    } finally {
+      setSegSaving(false);
+      // Liberar el lock DESPUÉS de un pequeño delay para que si React programa un re-render
+      // que dispare Enter/click residual, todavía esté bloqueado
+      setTimeout(() => { addSegLockRef.current = false; }, 500);
+    }
   };
 
   const addCotizacion = () => {
@@ -618,7 +661,7 @@ function DealCard({ deal, onSave, client, onLocalUpdate }: { deal: Deal; onSave:
                                 <p className="text-[12px] font-semibold text-[var(--red)]">No presenta condiciones — {aseg}</p>
                                 <div><label className="text-[10px] text-[var(--text-muted)] uppercase">Motivo *</label><textarea value={noCondMotivo} onChange={e => setNoCondMotivo(e.target.value)} placeholder="Explique por qué no presenta condiciones..." className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 text-[12px] outline-none mt-0.5 resize-none" rows={2} /></div>
                                 <div><label className="text-[10px] text-[var(--text-muted)] uppercase">Evidencia (pegar con Ctrl+V o subir)</label>
-                                  <div className="mt-0.5 relative" onPaste={async (e) => {
+                                  <div className="mt-0.5 relative" tabIndex={0} onPaste={async (e) => {
                                     const items = e.clipboardData?.items;
                                     if (!items) return;
                                     for (const item of Array.from(items)) {
@@ -818,138 +861,89 @@ function DealCard({ deal, onSave, client, onLocalUpdate }: { deal: Deal; onSave:
                   </div>
                 </div>
               )}
-              {/* Generar Cuadro Comparativo */}
-              {(deal.cotizaciones || []).length >= 2 && (
-                <button onClick={async () => {
-                  setSaving(true);
-                  try {
-                    // @ts-ignore
-                    const { jsPDF } = await import("jspdf");
-                    // @ts-ignore
-                    const autoTable = (await import("jspdf-autotable")).default;
-                    const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "letter" });
-                    const pw = doc.internal.pageSize.getWidth();
-                    const ph = doc.internal.pageSize.getHeight();
-                    const cots = deal.cotizaciones || [];
-                    const M = 14; const HH = 38; const FH = 20;
-
-                    const drawHeader = () => {
-                      doc.setFillColor(0, 62, 107); doc.rect(0, 0, pw, HH, "F");
-                      doc.setFillColor(0, 140, 190); doc.triangle(pw * 0.55, 0, pw, 0, pw, HH, "F");
-                      doc.setFillColor(0, 110, 160); doc.triangle(pw * 0.7, 0, pw, 0, pw, 22, "F");
-                      doc.setTextColor(255, 255, 255); doc.setFont("helvetica", "bold"); doc.setFontSize(28);
-                      doc.text("EXCELSIOR", 20, 21);
-                      doc.setFontSize(7); doc.setFont("helvetica", "normal");
-                      doc.text("AGENCIA DE SEGUROS Y RIESGOS LABORALES", 20, 29);
-                    };
-                    const drawFooter = () => {
-                      doc.setFillColor(0, 62, 107); doc.rect(0, ph - FH, pw, FH, "F");
-                      doc.setFillColor(0, 140, 190); doc.triangle(0, ph - FH, 90, ph - FH, 0, ph, "F");
-                      doc.setFillColor(0, 110, 160); doc.triangle(0, ph - FH, 50, ph - FH, 0, ph - 8, "F");
-                      doc.setTextColor(255, 255, 255); doc.setFontSize(7); doc.setFont("helvetica", "normal");
-                      doc.text("Dirección: Avenida 26 con Carrera 5 Local 106 — Antiguo aeropuerto | Cel: 3150733399", pw / 2, ph - 12, { align: "center" });
-                      doc.text("Email: gerencia@grupoexcelsior.co  |  www.excelsiorseguros.com", pw / 2, ph - 6, { align: "center" });
-                    };
-
-                    drawHeader();
-                    doc.setTextColor(0, 0, 0); doc.setFont("helvetica", "bold"); doc.setFontSize(18);
-                    doc.text(`COMPARATIVO— ${(deal.tipo_poliza || "PÓLIZA").toUpperCase()}`, pw / 2, HH + 14, { align: "center" });
-
-                    // === BUILD COMPARISON TABLE ===
-                    const headers = ["Aspecto", ...cots.map(c => c.aseguradora || "Aseguradora")];
-                    const tableRows: string[][] = [];
-
-                    // 1. Prima
-                    tableRows.push(["Prima total (con IVA y gastos)", ...cots.map(c => c.valor || "—")]);
-
-                    // 2. Parse coberturas by ; and : into comparable rows
-                    const allKeys: string[] = [];
-                    const kvMaps: Record<string, string>[] = cots.map(c => {
-                      const map: Record<string, string> = {};
-                      (c.coberturas || "").split(";").map(s => s.trim()).filter(Boolean).forEach(item => {
-                        const ci = item.indexOf(":");
-                        if (ci > 0) {
-                          const k = item.substring(0, ci).trim();
-                          if (!allKeys.includes(k)) allKeys.push(k);
-                          map[k] = item.substring(ci + 1).trim();
-                        } else {
-                          if (!allKeys.includes(item)) allKeys.push(item);
-                          map[item] = "Sí ampara";
+              {/* Cuadros Comparativos (subida manual) */}
+              <div className="mt-3">
+                <label className="text-[13px] text-[var(--text-muted)] uppercase font-medium mb-2 flex items-center gap-1.5">
+                  <FileSpreadsheet size={14} className="text-[#f59e0b]" />
+                  Cuadros Comparativos
+                </label>
+                {/* Lista de cuadros ya subidos */}
+                {(deal.cuadros_comparativos || []).length > 0 && (
+                  <div className="space-y-2 mb-3">
+                    {(deal.cuadros_comparativos || []).map((c, i) => (
+                      <div key={i} className="flex items-center gap-3 bg-[var(--surface)] rounded-xl px-4 py-3 border border-[var(--border)]">
+                        <FileText size={16} className="text-[#f59e0b] shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-[13px] font-medium truncate">{c.nombre}</p>
+                          <p className="text-[11px] text-[var(--text-muted)]">{c.fecha}{c.autor ? ` · ${c.autor}` : ""}</p>
+                        </div>
+                        {mappedEtapa !== "perdido" && (
+                          <button
+                            onClick={async () => {
+                              setSaving(true);
+                              const updated = (deal.cuadros_comparativos || []).filter((_, idx) => idx !== i);
+                              await sv({ cuadros_comparativos: updated });
+                              try { await fetch("https://n8n.grupoexcelsior.co/webhook/delete-drive-file", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cedula: deal.cedula, subfolder: "Comparativos", negocio_name: getNegName(), fileName: c.nombre }) }); } catch {}
+                              setSaving(false);
+                            }}
+                            className="p-1 rounded hover:bg-[rgba(239,68,68,0.15)] text-[var(--text-muted)] hover:text-[var(--red)]"
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {/* Botón/uploader para agregar */}
+                {mappedEtapa !== "perdido" && (
+                  <>
+                    <button
+                      onClick={() => cuadroCompRef.current?.click()}
+                      disabled={saving}
+                      className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 border-dashed border-[var(--border)] text-[var(--text-muted)] hover:border-[#f59e0b] hover:text-[#f59e0b] text-[14px] disabled:opacity-50"
+                    >
+                      {saving ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />}
+                      {saving ? "Subiendo..." : "Subir cuadro comparativo"}
+                    </button>
+                    <input
+                      ref={cuadroCompRef}
+                      type="file"
+                      multiple
+                      className="hidden"
+                      onChange={async e => {
+                        const files = Array.from(e.target.files || []);
+                        if (files.length === 0) return;
+                        setSaving(true);
+                        try {
+                          const b64Files = await Promise.all(files.map(f => new Promise<any>((res) => {
+                            const reader = new FileReader();
+                            reader.onload = () => res({ name: f.name, mimeType: f.type || "application/pdf", base64: (reader.result as string).split(",")[1] });
+                            reader.readAsDataURL(f);
+                          })));
+                          try { await uploadToNeg("Comparativos", b64Files); } catch {}
+                          const existentes = deal.cuadros_comparativos || [];
+                          let userName = "";
+                          try {
+                            const u = typeof window !== "undefined" ? localStorage.getItem("excelsior-user") : null;
+                            if (u) { const parsed = JSON.parse(u); userName = parsed.nombre || parsed.email || ""; }
+                          } catch {}
+                          const nuevos = files.map(f => ({
+                            nombre: f.name,
+                            fecha: new Date().toLocaleDateString("es-CO"),
+                            autor: userName,
+                          }));
+                          await sv({ cuadros_comparativos: [...existentes, ...nuevos] });
+                        } catch (err) {
+                          console.error("Error subiendo cuadro comparativo:", err);
                         }
-                      });
-                      return map;
-                    });
-
-                    // Add each cobertura as a row — side by side comparison
-                    if (allKeys.length > 0) {
-                      allKeys.forEach(key => {
-                        tableRows.push([key, ...kvMaps.map(m => m[key] || "—")]);
-                      });
-                    } else {
-                      // Fallback: show raw coberturas text
-                      tableRows.push(["Coberturas", ...cots.map(c => c.coberturas || "—")]);
-                    }
-
-                    // === DRAW TABLE ===
-                    autoTable(doc, {
-                      startY: HH + 20,
-                      head: [headers],
-                      body: tableRows,
-                      theme: "grid",
-                      headStyles: { fillColor: [0, 62, 107], textColor: 255, fontSize: 9, fontStyle: "bold", halign: "center", cellPadding: 4 },
-                      bodyStyles: { fontSize: 8.5, cellPadding: 3.5, lineColor: [180, 180, 180], lineWidth: 0.2, textColor: [30, 30, 30] },
-                      columnStyles: { 0: { fontStyle: "bold", cellWidth: 60, fillColor: [230, 238, 248] } },
-                      alternateRowStyles: { fillColor: [245, 248, 252] },
-                      margin: { left: M, right: M, top: HH + 8, bottom: FH + 10 },
-                      styles: { overflow: "linebreak", font: "helvetica" },
-                      didDrawPage: () => { drawHeader(); drawFooter(); },
-                    });
-
-                    // === CONCLUSION ===
-                    // @ts-ignore
-                    let curY = doc.lastAutoTable?.finalY || 140;
-                    // Reconstruir notas del análisis — puede ser JSON array (nuevo) o string plano (legacy)
-                    let notasTexto = "";
-                    if (deal.notas_analisis) {
-                      try {
-                        const parsed = JSON.parse(deal.notas_analisis);
-                        if (Array.isArray(parsed)) {
-                          notasTexto = parsed.map((n: any) => {
-                            const hdr = [n.autor ? `[${n.autor}]` : "", n.fecha || ""].filter(Boolean).join(" · ");
-                            return hdr ? `${hdr}\n${n.texto || ""}` : (n.texto || "");
-                          }).filter(Boolean).join("\n\n");
-                        } else {
-                          notasTexto = deal.notas_analisis;
-                        }
-                      } catch {
-                        notasTexto = deal.notas_analisis;
-                      }
-                    }
-                    if (notasTexto) {
-                      if (curY > ph - FH - 45) { doc.addPage(); drawHeader(); drawFooter(); curY = HH + 10; }
-                      curY += 8;
-                      doc.setFont("helvetica", "bold"); doc.setFontSize(13); doc.setTextColor(0, 0, 0);
-                      doc.text("Conclusión estratégica", M, curY); curY += 8;
-                      doc.setFont("helvetica", "normal"); doc.setFontSize(9.5); doc.setTextColor(40, 40, 40);
-                      const notes = doc.splitTextToSize(notasTexto, pw - M * 2);
-                      doc.text(notes, M, curY);
-                    }
-
-                    doc.setTextColor(170, 170, 170); doc.setFontSize(6.5);
-                    doc.text(`Documento generado — ${new Date().toLocaleDateString("es-CO")}`, pw - M, ph - FH - 4, { align: "right" });
-
-                    const fileName = `Comparativo_${(deal.tipo_poliza || "poliza").replace(/\s+/g, "_")}_${client.cedula}.pdf`;
-                    doc.save(fileName);
-                    const pdfBase64 = doc.output("datauristring").split(",")[1];
-                    try { await uploadToNeg("Comparativos", [{ name: fileName, mimeType: "application/pdf", base64: pdfBase64 }]); } catch {}
-
-                  } catch (err) { console.error("Error generating PDF:", err); }
-                  finally { setSaving(false); }
-                }} disabled={saving} className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-[14px] font-semibold bg-gradient-to-r from-[#f59e0b] to-[#d97706] text-white mt-3 disabled:opacity-50">
-                  {saving ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
-                  {saving ? "Generando..." : "Generar Cuadro Comparativo PDF"}
-                </button>
-              )}
+                        setSaving(false);
+                        if (cuadroCompRef.current) cuadroCompRef.current.value = "";
+                      }}
+                    />
+                  </>
+                )}
+              </div>
             </StageSection>
           )}
 
@@ -1089,7 +1083,7 @@ export default function ClientDetail({ client, onBack, expandedNegocioId, onNego
         try { const p = JSON.parse(sd.observacion || ''); if (typeof p === 'object') extras = p; } catch {}
         // historial_cuotas: preferir el array directo del backend; si no viene, caer a los extras del observacion (legacy)
         const histCuotas = Array.isArray(sd.historial_cuotas) && sd.historial_cuotas.length ? sd.historial_cuotas : (extras.historial_cuotas || []);
-        return { ...sd, cotizaciones: sd.cotizaciones || [], seguimientos: sd.seguimientos || [], propuesta_archivos: archivos, condiciones_rechazadas: condiciones, historial_cuotas: histCuotas, etapa_antes_perdido: extras.etapa_antes_perdido || "", endoso: extras.endoso || "", cert_pago: extras.cert_pago || "", documentos_cliente: extras.documentos_cliente || [], observacion: typeof extras === 'object' && Object.keys(extras).length > 0 ? '' : sd.observacion };
+        return { ...sd, cotizaciones: sd.cotizaciones || [], seguimientos: sd.seguimientos || [], propuesta_archivos: archivos, condiciones_rechazadas: condiciones, historial_cuotas: histCuotas, cuadros_comparativos: sd.cuadros_comparativos || [], etapa_antes_perdido: extras.etapa_antes_perdido || "", endoso: extras.endoso || "", cert_pago: extras.cert_pago || "", documentos_cliente: extras.documentos_cliente || [], observacion: typeof extras === 'object' && Object.keys(extras).length > 0 ? '' : sd.observacion };
       });
       if (serverDeals.length > 0) {
         const merged = serverDeals.map(sd => {
@@ -1189,6 +1183,7 @@ export default function ClientDetail({ client, onBack, expandedNegocioId, onNego
     if (updates.ramo !== undefined) params.ramo = updates.ramo;
     if (updates.cotizaciones) params.cotizaciones_json = JSON.stringify(updates.cotizaciones);
     if (updates.notas_analisis !== undefined) params.notas_analisis = updates.notas_analisis;
+    if (updates.cuadros_comparativos !== undefined) params.cuadros_comparativos = JSON.stringify(updates.cuadros_comparativos);
     if (updates.propuesta_enviada !== undefined) params.propuesta_enviada = updates.propuesta_enviada ? "SI" : "NO";
     if (updates.propuesta_archivos !== undefined || updates.condiciones_rechazadas !== undefined) {
       const deal = deals.find(d => d.id === updates.id);
