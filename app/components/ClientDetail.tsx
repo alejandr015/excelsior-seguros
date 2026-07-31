@@ -992,7 +992,7 @@ function DealCard({ deal, onSave, client, onLocalUpdate }: { deal: Deal; onSave:
                 <input ref={cuotaRef} type="file" className="hidden" onChange={async e => { const f = e.target.files?.[0]; if (!f || uploadingCuota === null) return; setSaving(true); const base64 = await new Promise<string>((res) => { const reader = new FileReader(); reader.onload = () => res((reader.result as string).split(",")[1]); reader.readAsDataURL(f); }); try { await uploadToNeg("Recibos", [{ name: f.name, mimeType: f.type || "application/pdf", base64 }]); } catch {} const newHist = (deal.historial_cuotas || []).map(h => h.cuota === uploadingCuota ? { ...h, evidencia: f.name } : h); await sv({ historial_cuotas: newHist }); setUploadingCuota(null); setSaving(false); if (cuotaRef.current) cuotaRef.current.value = ""; }} />
                 {deal.cuotas_pagadas >= deal.cuotas_total && deal.cuotas_total > 0 && !deal.pagado && (<button onClick={() => sv({ pagado: true })} className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-[var(--green)] text-white text-[14px] font-semibold"><CheckCircle2 size={16} />Confirmar recaudo completo</button>)}
                 {deal.pagado && <p className="text-[13px] text-[var(--green)] flex items-center gap-1.5 font-semibold"><CheckCircle2 size={14} />Financiación completada y confirmada</p>}
-                <div><label className="text-[13px] text-[var(--text-muted)] uppercase font-medium">Certificado de pago</label>{deal.cert_pago ? (<div className="flex items-center gap-3 mt-1 p-3 bg-[var(--green-glow)] rounded-lg"><FileText size={16} className="text-[var(--green)]" /><span className="text-[14px] text-[var(--green)] flex-1">{deal.cert_pago}</span></div>) : (<button onClick={() => certPagoRef.current?.click()} className="mt-1 w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 border-dashed border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--purple)] text-[14px]"><Upload size={16} />Subir certificado</button>)}</div>
+                <div><label className="text-[13px] text-[var(--text-muted)] uppercase font-medium">Certificado de pago</label>{deal.cert_pago ? (<div className="flex items-center gap-3 mt-1 p-3 bg-[var(--green-glow)] rounded-lg"><FileText size={16} className="text-[var(--green)]" /><span className="text-[14px] text-[var(--green)] flex-1">{deal.cert_pago}</span></div>) : (<button onClick={() => certPagoRef.current?.click()} className="mt-1 w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 border-dashed border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--purple)] text-[14px]"><Upload size={16} />Subir certificado</button>)}<input ref={certPagoRef} type="file" className="hidden" onChange={async e => { const f = e.target.files?.[0]; if (!f) return; setSaving(true); const base64 = await new Promise<string>((res) => { const reader = new FileReader(); reader.onload = () => res((reader.result as string).split(",")[1]); reader.readAsDataURL(f); }); try { await uploadToNeg("Certificados", [{ name: f.name, mimeType: f.type || "application/pdf", base64 }]); } catch {} await sv({ cert_pago: f.name }); setSaving(false); if (certPagoRef.current) certPagoRef.current.value = ""; }} /></div>
               </div>)}
             </StageSection>
           )}
@@ -1246,7 +1246,15 @@ export default function ClientDetail({ client, onBack, expandedNegocioId, onNego
             {deals.length > 0 && (<div className="flex items-center gap-2 mt-2 flex-wrap">{deals.map(d => { const c = getPCfg(d.tipo_poliza); return (<span key={d.id} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[12px] font-medium" style={{ background: c.glow, color: c.color }}>{c.icon} {d.tipo_poliza}</span>); })}</div>)}
           </div>
           <div className="flex items-center gap-3">
-            <button onClick={loadDeals} className="p-2.5 rounded-xl bg-[var(--surface-light)] border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)]"><RefreshCw size={16} className={loading ? "animate-spin" : ""} /></button>
+            <button
+              onClick={loadDeals}
+              disabled={loading}
+              title="Recargar datos del cliente desde el servidor"
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[var(--surface-light)] border border-[var(--border)] text-[13px] font-medium text-[var(--text-secondary)] hover:text-[var(--accent)] hover:border-[var(--accent)] disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+            >
+              <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
+              {loading ? "Recargando..." : "Recargar datos"}
+            </button>
             <div className="text-right"><div className="text-[13px] text-[var(--text-muted)] uppercase">Pólizas</div><div className="text-3xl font-bold text-[var(--accent)]">{deals.length}</div></div>
           </div>
         </div>
