@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect } from "react";
-import { LayoutDashboard, Users, MessageSquare, Upload, Briefcase, GitBranch, Bell, Sun, Moon, BarChart3, LogOut, Settings, FileText, FolderOpen } from "lucide-react";
+import { LayoutDashboard, Users, MessageSquare, Upload, Briefcase, GitBranch, Bell, Sun, Moon, BarChart3, LogOut, Settings, FileText, FolderOpen, Edit3 } from "lucide-react";
 import Image from "next/image";
 import { getUserAvatar } from "./ProfileSettings";
 
@@ -13,6 +13,7 @@ const ALL_SIDEBAR_ITEMS = [
   { id: "documents", label: "Documentos", icon: Upload },
   { id: "analytics", label: "Reportes", icon: BarChart3 },
   { id: "formularios", label: "Formularios", icon: FileText },
+  { id: "edit", label: "Editar", icon: Edit3 },
   { id: "admin", label: "Administración", icon: Settings },
 ];
 

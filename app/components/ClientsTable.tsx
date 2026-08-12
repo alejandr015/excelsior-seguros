@@ -1,6 +1,6 @@
 "use client";
 import { useState, useMemo } from "react";
-import { ChevronDown, ArrowUpDown, ArrowUp, ArrowDown, X, ChevronRight, UserPlus, Loader2 } from "lucide-react";
+import { ChevronDown, ArrowUpDown, ArrowUp, ArrowDown, X, ChevronRight, UserPlus, Loader2, Calendar } from "lucide-react";
 import type { Client } from "../page";
 
 const N8N_API_CLIENTS = "https://n8n.grupoexcelsior.co/webhook/api-clients";
@@ -55,6 +55,8 @@ export default function ClientsTable({ clients, searchQuery, loading, onSelectCl
   const [filterEstado, setFilterEstado] = useState("");
   const [filterPoliza, setFilterPoliza] = useState("");
   const [filterAseguradora, setFilterAseguradora] = useState("");
+  const [filterFechaDesde, setFilterFechaDesde] = useState("");
+  const [filterFechaHasta, setFilterFechaHasta] = useState("");
   // Add prospect form
   const [showAdd, setShowAdd] = useState(false);
   const [addNombre, setAddNombre] = useState("");
@@ -78,22 +80,51 @@ export default function ClientsTable({ clients, searchQuery, loading, onSelectCl
     return sortDir === "asc" ? <ArrowUp size={11} className="text-[var(--accent)]" /> : <ArrowDown size={11} className="text-[var(--accent)]" />;
   };
 
+  // Parsea fechas de cliente (formato colombiano DD/M/YYYY o similar) a timestamp
+  const parseClientDate = (raw: string): number => {
+    if (!raw) return 0;
+    const s = String(raw).trim();
+    // Formato DD/M/YYYY o D/M/YYYY o DD/MM/YY
+    const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+    if (m) {
+      const d = parseInt(m[1]), mo = parseInt(m[2]) - 1;
+      let y = parseInt(m[3]);
+      if (y < 100) y += 2000;
+      return new Date(y, mo, d).getTime();
+    }
+    // Fallback ISO
+    const t = new Date(s).getTime();
+    return isNaN(t) ? 0 : t;
+  };
+
   const processed = useMemo(() => {
     let result = clients.filter(c => c.nombre.toLowerCase().includes(searchQuery.toLowerCase()) || String(c.cedula).includes(searchQuery));
     if (filterEstado) result = result.filter(c => c.estado === filterEstado);
     if (filterPoliza) result = result.filter(c => (c.tipo_poliza || "").includes(filterPoliza));
     if (filterAseguradora) result = result.filter(c => (c.aseguradora || "").includes(filterAseguradora));
+    if (filterFechaDesde || filterFechaHasta) {
+      const desdeTs = filterFechaDesde ? new Date(filterFechaDesde + "T00:00:00").getTime() : 0;
+      const hastaTs = filterFechaHasta ? new Date(filterFechaHasta + "T23:59:59").getTime() : Number.MAX_SAFE_INTEGER;
+      result = result.filter(c => {
+        const t = parseClientDate(c.fecha);
+        if (t === 0) return false;
+        return t >= desdeTs && t <= hastaTs;
+      });
+    }
     if (sortField) {
       result = [...result].sort((a, b) => {
         const vA = (a[sortField] || "").toString().toLowerCase(), vB = (b[sortField] || "").toString().toLowerCase();
-        if (sortField === "fecha") return sortDir === "asc" ? (new Date(vA).getTime() || 0) - (new Date(vB).getTime() || 0) : (new Date(vB).getTime() || 0) - (new Date(vA).getTime() || 0);
+        if (sortField === "fecha") {
+          const tA = parseClientDate(a.fecha || ""); const tB = parseClientDate(b.fecha || "");
+          return sortDir === "asc" ? tA - tB : tB - tA;
+        }
         return sortDir === "asc" ? vA.localeCompare(vB) : vB.localeCompare(vA);
       });
     }
     return result;
-  }, [clients, searchQuery, filterEstado, filterPoliza, filterAseguradora, sortField, sortDir]);
+  }, [clients, searchQuery, filterEstado, filterPoliza, filterAseguradora, filterFechaDesde, filterFechaHasta, sortField, sortDir]);
 
-  const hasFilters = filterEstado || filterPoliza || filterAseguradora;
+  const hasFilters = filterEstado || filterPoliza || filterAseguradora || filterFechaDesde || filterFechaHasta;
 
   const handleAddProspect = async () => {
     if (!addNombre.trim() || !addCedula.trim()) { setAddError("Nombre y cédula son requeridos"); return; }
@@ -139,13 +170,51 @@ export default function ClientsTable({ clients, searchQuery, loading, onSelectCl
               {filterEstado && <button onClick={() => setFilterEstado("")} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[var(--accent-glow)] border border-amber-500/20 text-[var(--accent)] text-xs font-medium">Estado: {filterEstado} <X size={10} /></button>}
               {filterPoliza && <button onClick={() => setFilterPoliza("")} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[var(--accent-glow)] border border-amber-500/20 text-[var(--accent)] text-xs font-medium">Póliza: {filterPoliza} <X size={10} /></button>}
               {filterAseguradora && <button onClick={() => setFilterAseguradora("")} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[var(--accent-glow)] border border-amber-500/20 text-[var(--accent)] text-xs font-medium">Aseg: {filterAseguradora} <X size={10} /></button>}
-              <button onClick={() => { setFilterEstado(""); setFilterPoliza(""); setFilterAseguradora(""); }} className="text-xs text-[var(--text-muted)] hover:text-[var(--red)] ml-1">Limpiar</button>
+              {(filterFechaDesde || filterFechaHasta) && <button onClick={() => { setFilterFechaDesde(""); setFilterFechaHasta(""); }} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[var(--accent-glow)] border border-amber-500/20 text-[var(--accent)] text-xs font-medium"><Calendar size={10} />{filterFechaDesde || "…"} → {filterFechaHasta || "…"} <X size={10} /></button>}
+              <button onClick={() => { setFilterEstado(""); setFilterPoliza(""); setFilterAseguradora(""); setFilterFechaDesde(""); setFilterFechaHasta(""); }} className="text-xs text-[var(--text-muted)] hover:text-[var(--red)] ml-1">Limpiar</button>
             </>
           )}
         </div>
         <button onClick={() => setShowAdd(true)} className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-[13px] font-semibold text-white" style={{ background: "linear-gradient(135deg, var(--accent), var(--accent-dark))" }}>
           <UserPlus size={15} /> Agregar Prospecto
         </button>
+      </div>
+
+      {/* Filtro por rango de fechas */}
+      <div className="mb-4 flex items-center gap-3 flex-wrap">
+        <div className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
+          <Calendar size={13} />
+          <span className="uppercase font-medium">Filtrar por fecha creación:</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <label className="text-xs text-[var(--text-muted)]">Desde</label>
+          <input
+            type="date"
+            value={filterFechaDesde}
+            onChange={e => setFilterFechaDesde(e.target.value)}
+            max={filterFechaHasta || undefined}
+            className="bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-1.5 text-[13px] outline-none focus:border-[var(--accent)]"
+          />
+        </div>
+        <div className="flex items-center gap-2">
+          <label className="text-xs text-[var(--text-muted)]">Hasta</label>
+          <input
+            type="date"
+            value={filterFechaHasta}
+            onChange={e => setFilterFechaHasta(e.target.value)}
+            min={filterFechaDesde || undefined}
+            className="bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-1.5 text-[13px] outline-none focus:border-[var(--accent)]"
+          />
+        </div>
+        {(filterFechaDesde || filterFechaHasta) && (
+          <button
+            onClick={() => { setFilterFechaDesde(""); setFilterFechaHasta(""); }}
+            className="text-xs text-[var(--text-muted)] hover:text-[var(--red)] flex items-center gap-1"
+            title="Limpiar rango"
+          >
+            <X size={11} />Limpiar rango
+          </button>
+        )}
       </div>
 
       {/* Add Prospect Modal */}

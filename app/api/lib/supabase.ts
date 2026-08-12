@@ -2,7 +2,7 @@
 // Solo se importa desde route handlers (API routes) — NUNCA desde un Client Component.
 
 const SB_URL = "https://uytlatezbqphqgauuvcl.supabase.co/rest/v1";
-const SB_KEY = "sb_secret_oZ9AB9pNw5W8VFKWYCxUyQ_nEQtJGt3";
+const SB_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV5dGxhdGV6YnFwaHFnYXV1dmNsIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3NTU5NTI4MCwiZXhwIjoyMDkxMTcxMjgwfQ.HcFRwns1UQaW5-c6yLcSBqYyST4nivLqN3cvvEaAzqY";
 
 const baseHeaders = {
   apikey: SB_KEY,

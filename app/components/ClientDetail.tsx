@@ -7,7 +7,7 @@ import {
   Calendar, FileText, ChevronRight, Edit2, Phone, Search as SearchIcon,
   CheckCircle2, TrendingUp, ChevronDown, Briefcase, Upload,
   CreditCard, Banknote, AlertTriangle, Loader2, RefreshCw, Clock,
-  UserPlus, BarChart3, FileSpreadsheet, Send, DollarSign, Plus, Trash2, Download, X} from "lucide-react";
+  UserPlus, BarChart3, FileSpreadsheet, Send, DollarSign, Plus, Trash2, Download, X, GitBranch, Percent} from "lucide-react";
 import type { Client, Poliza } from "../page";
 
 const WF20 = "https://n8n.grupoexcelsior.co/webhook/guardar-negocio";
@@ -52,6 +52,148 @@ async function resolveNegocioFolder(cedula: string, negocioName: string, clientF
 }
 
 const ASEGURADORAS_ALIADAS = ["Sura", "AXA Colpatria", "Seguros Mundial", "BMI", "Mapfre", "Positiva", "Lob&Seguros"];
+
+const N8N_CATALOGOS_URL = "https://n8n.grupoexcelsior.co/webhook/catalogos";
+
+// Hook para cargar ramos únicos desde todas las aseguradoras (para el dropdown de tipo de póliza)
+function useRamosUnicos() {
+  const [ramos, setRamos] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        console.log("[useRamosUnicos] Iniciando carga de ramos...");
+        // 1. Listar todas las aseguradoras
+        const asegRes = await fetch(N8N_CATALOGOS_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "list", catalog: "Aseguradoras" }),
+        });
+        if (!asegRes.ok) {
+          console.error("[useRamosUnicos] Error HTTP en aseguradoras:", asegRes.status);
+          if (!cancelled) { setRamos([]); setLoading(false); }
+          return;
+        }
+        const asegData = await asegRes.json();
+        console.log("[useRamosUnicos] Response aseguradoras:", asegData);
+        // El backend puede devolver { data: [...] } o directamente [...]
+        const rawAseg = Array.isArray(asegData?.data) ? asegData.data : Array.isArray(asegData) ? asegData : [];
+        const aseguradoras: { id: number }[] = rawAseg.filter((a: { id?: number }) => a && typeof a.id === "number");
+        console.log("[useRamosUnicos] Aseguradoras parseadas:", aseguradoras.length, aseguradoras);
+        if (aseguradoras.length === 0) { if (!cancelled) { setRamos([]); setLoading(false); } return; }
+
+        // 2. Cargar ramos de cada aseguradora en paralelo
+        const promesas = aseguradoras.map(a =>
+          fetch(N8N_CATALOGOS_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "list", catalog: "Ramos", parent_id: a.id }),
+          }).then(r => r.json()).catch((err) => { console.error("[useRamosUnicos] Error cargando ramos de", a.id, err); return { data: [] }; })
+        );
+        const resultados = await Promise.all(promesas);
+        console.log("[useRamosUnicos] Response ramos crudos:", resultados);
+
+        // 3. Extraer nombres únicos (case-insensitive)
+        const set = new Set<string>();
+        resultados.forEach(res => {
+          const lista: { nombre?: string }[] = Array.isArray(res?.data) ? res.data : Array.isArray(res) ? res : [];
+          lista.forEach(r => { if (r?.nombre) set.add(String(r.nombre).trim().toUpperCase()); });
+        });
+
+        const unicos = Array.from(set).sort((a, b) => a.localeCompare(b));
+        console.log("[useRamosUnicos] Ramos únicos finales:", unicos);
+        if (!cancelled) { setRamos(unicos); setLoading(false); }
+      } catch (err) {
+        console.error("[useRamosUnicos] Error inesperado:", err);
+        if (!cancelled) { setRamos([]); setLoading(false); }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  return { ramos, loading };
+}
+
+// Árbol completo de catálogos: Aseguradoras → Ramos → Productos
+// Se usa en el pipeline (contacto_inicial) para dropdowns dependientes.
+interface AsegTree {
+  id: number;
+  nombre: string;
+  ramos: { id: number; nombre: string; productos: { id: number; nombre: string; comision: number }[] }[];
+}
+function useCatalogosTree() {
+  const [tree, setTree] = useState<AsegTree[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        // 1. Aseguradoras
+        const asegRes = await fetch(N8N_CATALOGOS_URL, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "list", catalog: "Aseguradoras" }),
+        });
+        const asegData = await asegRes.json();
+        const rawAseg = Array.isArray(asegData?.data) ? asegData.data : Array.isArray(asegData) ? asegData : [];
+        const aseguradoras: { id: number; nombre: string }[] = rawAseg.filter((a: { id?: number; nombre?: string }) => a && typeof a.id === "number" && a.nombre);
+        if (aseguradoras.length === 0) { if (!cancelled) { setTree([]); setLoading(false); } return; }
+
+        // 2. Ramos de cada aseguradora
+        const ramosPromesas = aseguradoras.map(a =>
+          fetch(N8N_CATALOGOS_URL, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "list", catalog: "Ramos", parent_id: a.id }),
+          }).then(r => r.json()).catch(() => ({ data: [] }))
+        );
+        const ramosResults = await Promise.all(ramosPromesas);
+
+        // 3. Productos de cada ramo (todos en paralelo)
+        const allRamosFlat: { asegIdx: number; ramoId: number; ramoNombre: string }[] = [];
+        ramosResults.forEach((res, asegIdx) => {
+          const lista = Array.isArray(res?.data) ? res.data : Array.isArray(res) ? res : [];
+          lista.forEach((r: { id?: number; nombre?: string }) => {
+            if (r?.id && r?.nombre) allRamosFlat.push({ asegIdx, ramoId: r.id, ramoNombre: r.nombre });
+          });
+        });
+        const prodPromesas = allRamosFlat.map(r =>
+          fetch(N8N_CATALOGOS_URL, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "list", catalog: "Productos", parent_id: r.ramoId }),
+          }).then(res => res.json()).catch(() => ({ data: [] }))
+        );
+        const prodResults = await Promise.all(prodPromesas);
+
+        // 4. Construir el árbol
+        const finalTree: AsegTree[] = aseguradoras.map(a => ({ id: a.id, nombre: a.nombre, ramos: [] }));
+        allRamosFlat.forEach((r, i) => {
+          const prods = Array.isArray(prodResults[i]?.data) ? prodResults[i].data : Array.isArray(prodResults[i]) ? prodResults[i] : [];
+          const productos = prods.filter((p: { id?: number; nombre?: string }) => p?.id && p?.nombre).map((p: { id: number; nombre: string; comision?: number }) => ({
+            id: p.id, nombre: p.nombre, comision: Number(p.comision) || 0
+          }));
+          finalTree[r.asegIdx].ramos.push({ id: r.ramoId, nombre: r.ramoNombre, productos });
+        });
+
+        // Ordenar
+        finalTree.forEach(a => {
+          a.ramos.sort((x, y) => x.nombre.localeCompare(y.nombre));
+          a.ramos.forEach(r => r.productos.sort((x, y) => x.nombre.localeCompare(y.nombre)));
+        });
+        finalTree.sort((a, b) => a.nombre.localeCompare(b.nombre));
+
+        if (!cancelled) { setTree(finalTree); setLoading(false); }
+      } catch (err) {
+        console.error("[useCatalogosTree] Error:", err);
+        if (!cancelled) { setTree([]); setLoading(false); }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  return { tree, loading };
+}
 const TIPOS_POLIZA_OPTIONS = ["Autos", "Vida", "Hogar", "Salud", "SOAT", "ARL", "Responsabilidad Civil", "Cumplimiento", "Transporte", "Otro"];
 
 const POLICY_TYPES: Record<string, { icon: React.ReactNode; color: string; glow: string }> = {
@@ -95,6 +237,8 @@ interface Deal {
   etapa_antes_perdido?: string; endoso?: string; cert_pago?: string;
   documentos_cliente?: { nombre: string; fecha: string }[];
   numero_poliza?: string; vigencia_desde?: string; vigencia_hasta?: string; prima?: string; archivo?: string;
+  asesor?: string;
+  aseguradoras_config?: { aseguradora: string; ramo: string; producto: string }[];
 }
 
 function getStageIndex(s: Stage) { return s === "perdido" ? -1 : STAGES.findIndex(x => x.id === s); }
@@ -115,7 +259,7 @@ function StageSection({ title, icon, color, glow, children }: { title: string; i
 }
 
 // ═══ DEAL CARD ═══
-function DealCard({ deal, onSave, client, onLocalUpdate }: { deal: Deal; onSave: (u: Partial<Deal> & { id: string }) => Promise<void>; client: Client; onLocalUpdate?: (u: Partial<Deal> & { id: string }) => void }) {
+function DealCard({ deal, onSave, client, onLocalUpdate, userRol }: { deal: Deal; onSave: (u: Partial<Deal> & { id: string }) => Promise<void>; client: Client; onLocalUpdate?: (u: Partial<Deal> & { id: string }) => void; userRol?: string }) {
   const [exp, setExp] = useState(false);
   const [saving, setSaving] = useState(false);
   const [advanceError, setAdvanceError] = useState("");
@@ -125,6 +269,13 @@ function DealCard({ deal, onSave, client, onLocalUpdate }: { deal: Deal; onSave:
   const [ciRamo, setCiRamo] = useState(deal.ramo || deal.tipo_poliza || "");
   const [ciNombre, setCiNombre] = useState(deal.contacto_nombre || client.nombre || "");
   const [ciTel, setCiTel] = useState(deal.contacto_tel || client.telefono || "");
+  // Catálogos jerárquicos (Aseguradoras → Ramos → Productos) para los dropdowns dependientes
+  const { tree: catalogTree, loading: catalogLoading } = useCatalogosTree();
+  const [asesor, setAsesor] = useState(deal.asesor || "");
+  const [savingAsesor, setSavingAsesor] = useState(false);
+  // Permisos: solo admin y desarrollador pueden eliminar seguimientos/alertas. Gestor NO puede.
+  const canDeleteSeguimientos = userRol === "admin" || userRol === "desarrollador";
+  useEffect(() => { setAsesor(deal.asesor || ""); }, [deal.asesor]);
   const [newCotAseg, setNewCotAseg] = useState(""); const [newCotValor, setNewCotValor] = useState("");
   const [newCotCob, setNewCotCob] = useState(""); const [notasAnalisis, setNotasAnalisis] = useState(""); const [savingNota, setSavingNota] = useState(false);
   // Parsear historial de notas del análisis. Si es JSON array -> historial; si es string plano legacy -> 1 entrada.
@@ -360,6 +511,8 @@ function DealCard({ deal, onSave, client, onLocalUpdate }: { deal: Deal; onSave:
   }, [noCondAseg]);
 
   const delSeg = async (s: { id?: string; fecha: string; nota: string }) => {
+    // Seguridad: solo admin/desarrollador pueden eliminar seguimientos/alertas
+    if (!canDeleteSeguimientos) return;
     // Filtro local: si tiene id, borrar por id (elimina UNA sola row del UI).
     // Si no tiene id (seguimiento recién creado que aún no se ha recargado), fallback a fecha+nota.
     const restantes = s.id
@@ -497,7 +650,7 @@ function DealCard({ deal, onSave, client, onLocalUpdate }: { deal: Deal; onSave:
             })()}
           </div>}
         </div>
-        <div className="flex items-center gap-3 shrink-0">{saving && <Loader2 size={14} className="animate-spin text-[var(--accent)]" />}<span className="px-3 py-1.5 rounded-lg text-[13px] font-semibold" style={{ background: cs.glow, color: cs.color }}>{cs.label}</span><ChevronDown size={16} className={`text-[var(--text-muted)] transition-transform ${exp ? "rotate-180" : ""}`} /></div>
+        <div className="flex items-center gap-3 shrink-0">{saving && <Loader2 size={14} className="animate-spin text-[var(--accent)]" />}<span className="px-3 py-1.5 rounded-lg text-[13px] font-semibold" style={{ background: cs.glow, color: cs.color }}>{cs.label}</span><div className="flex flex-col items-end gap-0.5">{deal.fecha_creacion && <span className="text-[10px] text-[var(--text-muted)] leading-none" title="Fecha de creación del negocio">{deal.fecha_creacion}</span>}<ChevronDown size={16} className={`text-[var(--text-muted)] transition-transform ${exp ? "rotate-180" : ""}`} /></div></div>
       </div>
 
       {exp && (
@@ -552,6 +705,120 @@ function DealCard({ deal, onSave, client, onLocalUpdate }: { deal: Deal; onSave:
                     )}
                     {renderEditAsegBlock(asegList.length > 0 ? "Agregar o editar aseguradoras" : "Agregar aseguradoras aliadas")}
                   </div>
+
+                  {/* ═══ Configuración por aseguradora (Ramo + Producto) ═══ */}
+                  {asegList.length > 0 && (
+                    <div className="pt-3">
+                      <span className="text-[var(--text-muted)] text-[12px] uppercase">Ramo y producto por aseguradora</span>
+                      <div className="mt-2 space-y-2">
+                        {catalogLoading ? (
+                          <div className="flex items-center gap-2 text-[13px] text-[var(--text-muted)] py-2">
+                            <Loader2 size={13} className="animate-spin" />
+                            Cargando catálogos...
+                          </div>
+                        ) : (
+                          asegList.map(aseg => {
+                            // Buscar la aseguradora en el tree (comparación case-insensitive)
+                            const asegNorm = aseg.toUpperCase().trim();
+                            const asegNode = catalogTree.find(a => a.nombre.toUpperCase().trim() === asegNorm);
+                            // Config existente para esta aseguradora
+                            const config = (deal.aseguradoras_config || []).find(c => c.aseguradora?.toUpperCase().trim() === asegNorm);
+                            const currentRamo = config?.ramo || "";
+                            const currentProd = config?.producto || "";
+                            // Ramos disponibles para esta aseguradora
+                            const ramosDisp = asegNode?.ramos || [];
+                            // Productos disponibles para el ramo seleccionado
+                            const ramoNode = ramosDisp.find(r => r.nombre.toUpperCase().trim() === currentRamo.toUpperCase().trim());
+                            const productosDisp = ramoNode?.productos || [];
+
+                            const updateConfig = async (newRamo: string, newProducto: string) => {
+                              const existing = [...(deal.aseguradoras_config || [])];
+                              const idx = existing.findIndex(c => c.aseguradora?.toUpperCase().trim() === asegNorm);
+                              const entry = { aseguradora: aseg, ramo: newRamo, producto: newProducto };
+                              if (idx >= 0) existing[idx] = entry;
+                              else existing.push(entry);
+                              await sv({ aseguradoras_config: existing });
+                            };
+
+                            return (
+                              <div key={aseg} className="flex items-center gap-2 flex-wrap bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-2.5">
+                                <div className="flex items-center gap-1.5 min-w-[140px]">
+                                  <Shield size={13} className="text-[var(--accent)]" />
+                                  <span className="text-[13px] font-semibold text-[var(--text-primary)]">{aseg}</span>
+                                </div>
+                                <div className="flex-1 min-w-[140px]">
+                                  {asegNode ? (
+                                    <select
+                                      value={currentRamo}
+                                      onChange={e => updateConfig(e.target.value, "")}
+                                      disabled={mappedEtapa === "perdido"}
+                                      className="w-full bg-[var(--surface-light)] border border-[var(--border)] rounded-lg px-2.5 py-1.5 text-[12px] outline-none focus:border-[var(--accent)] disabled:opacity-50"
+                                    >
+                                      <option value="">— Ramo —</option>
+                                      {ramosDisp.map(r => (
+                                        <option key={r.id} value={r.nombre}>{r.nombre}</option>
+                                      ))}
+                                    </select>
+                                  ) : (
+                                    <span className="text-[11px] text-[var(--text-muted)] italic">Aseguradora no está en Editar</span>
+                                  )}
+                                </div>
+                                <div className="flex-1 min-w-[140px]">
+                                  {asegNode && currentRamo && (
+                                    <select
+                                      value={currentProd}
+                                      onChange={e => updateConfig(currentRamo, e.target.value)}
+                                      disabled={mappedEtapa === "perdido" || productosDisp.length === 0}
+                                      className="w-full bg-[var(--surface-light)] border border-[var(--border)] rounded-lg px-2.5 py-1.5 text-[12px] outline-none focus:border-[var(--accent)] disabled:opacity-50"
+                                    >
+                                      <option value="">— Producto —</option>
+                                      {productosDisp.map(p => (
+                                        <option key={p.id} value={p.nombre}>{p.nombre}{p.comision > 0 ? ` (${p.comision}%)` : ""}</option>
+                                      ))}
+                                    </select>
+                                  )}
+                                </div>
+                                {/* Badge con % de comisión (solo lectura, aparece cuando hay producto seleccionado) */}
+                                {asegNode && currentRamo && currentProd && (() => {
+                                  const prodNode = productosDisp.find(p => p.nombre.toUpperCase().trim() === currentProd.toUpperCase().trim());
+                                  const com = prodNode?.comision ?? 0;
+                                  return (
+                                    <div className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-[var(--green-glow)] border border-green-500/20 shrink-0" title="Comisión del producto (editable solo desde Editar)">
+                                      <Percent size={11} className="text-[var(--green)]" />
+                                      <span className="text-[12px] font-semibold text-[var(--green)]">{Number(com).toFixed(2)}</span>
+                                    </div>
+                                  );
+                                })()}
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ═══ Asesor ═══ */}
+                  <div className="pt-3">
+                    <label className="text-[var(--text-muted)] text-[12px] uppercase">Asesor</label>
+                    <div className="flex gap-2 mt-1.5">
+                      <input
+                        type="text"
+                        value={asesor}
+                        onChange={e => setAsesor(e.target.value)}
+                        onBlur={async () => {
+                          if (asesor !== (deal.asesor || "")) {
+                            setSavingAsesor(true);
+                            try { await sv({ asesor }); } catch {}
+                            setSavingAsesor(false);
+                          }
+                        }}
+                        disabled={mappedEtapa === "perdido"}
+                        placeholder="Nombre del asesor asignado"
+                        className="flex-1 bg-[var(--surface)] border border-[var(--border)] rounded-xl px-4 py-2.5 text-[14px] outline-none focus:border-[var(--accent)] disabled:opacity-50"
+                      />
+                      {savingAsesor && <Loader2 size={14} className="animate-spin text-[var(--text-muted)] self-center" />}
+                    </div>
+                  </div>
                   {/* ═══ Documentos del cliente (CC, RUT, RUNT, etc) - siempre visibles ═══ */}
                   <div className="pt-1">
                     <div className="flex items-center justify-between mb-2">
@@ -601,7 +868,7 @@ function DealCard({ deal, onSave, client, onLocalUpdate }: { deal: Deal; onSave:
           {(mappedEtapa === "seguimiento" || idx > 1 || mappedEtapa === "perdido") && (
             <StageSection title="Seguimiento" icon={<EyeIcon size={16} />} color="var(--stage-follow)" glow="var(--stage-follow-glow)">
               <div className="space-y-2 mb-3 max-h-[300px] overflow-y-auto">{deal.seguimientos.length === 0 ? <p className="text-[14px] text-[var(--text-muted)] italic py-2">Sin seguimientos — debes agregar al menos uno para avanzar</p> : [...deal.seguimientos].reverse().map((s, i) => (
-                <div key={i} className="group flex items-start gap-3 bg-[var(--surface)] rounded-xl px-4 py-3 border border-[var(--border)]"><Calendar size={14} className="text-[var(--stage-follow)] mt-0.5 shrink-0" /><div className="flex-1 min-w-0"><span className="text-[12px] font-semibold text-[var(--stage-follow)]">{s.fecha}</span><p className="text-[14px] text-[var(--text-secondary)] mt-0.5 break-words">{s.nota}</p></div>{mappedEtapa !== "perdido" && <button onClick={() => delSeg(s)} className="shrink-0 p-1.5 rounded-lg text-[var(--text-muted)] hover:text-[var(--red)] hover:bg-[var(--red-glow)] opacity-60 hover:opacity-100 transition-all" title="Eliminar seguimiento"><X size={14} /></button>}</div>
+                <div key={i} className="group flex items-start gap-3 bg-[var(--surface)] rounded-xl px-4 py-3 border border-[var(--border)]"><Calendar size={14} className="text-[var(--stage-follow)] mt-0.5 shrink-0" /><div className="flex-1 min-w-0"><span className="text-[12px] font-semibold text-[var(--stage-follow)]">{s.fecha}</span><p className="text-[14px] text-[var(--text-secondary)] mt-0.5 break-words">{s.nota}</p></div>{mappedEtapa !== "perdido" && canDeleteSeguimientos && <button onClick={() => delSeg(s)} className="shrink-0 p-1.5 rounded-lg text-[var(--text-muted)] hover:text-[var(--red)] hover:bg-[var(--red-glow)] opacity-60 hover:opacity-100 transition-all" title="Eliminar seguimiento"><X size={14} /></button>}</div>
               ))}</div>
               {mappedEtapa !== "perdido" && (<div className="space-y-2"><div className="grid grid-cols-[1fr_140px_auto] gap-3"><div><label className="text-[12px] text-[var(--text-muted)] uppercase font-medium">Observación *</label><input className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-xl px-4 py-3 text-[14px] outline-none mt-1" value={newSegNota} onChange={e => { setNewSegNota(e.target.value); setSegError(""); setSegSuccess(""); }} placeholder="Ej: Se contactó al cliente..." onKeyDown={e => e.key === "Enter" && addSeg()} /></div><div><label className="text-[12px] text-[var(--text-muted)] uppercase font-medium">Fecha *</label><input type="date" className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-3 text-[14px] outline-none mt-1" value={newSegFecha} onChange={e => { setNewSegFecha(e.target.value); setSegError(""); }} /></div><button onClick={addSeg} disabled={segSaving} className="self-end px-5 py-3 bg-[var(--stage-follow)] text-[var(--bg)] text-[14px] font-semibold rounded-xl disabled:opacity-50 disabled:cursor-not-allowed">{segSaving ? "Guardando..." : "Agregar"}</button></div>{segError && <div className="flex items-center gap-2 text-[var(--red)] text-[13px] font-medium"><AlertTriangle size={14} />{segError}</div>}{segSuccess && <div className="flex items-center gap-2 text-[var(--green)] text-[13px] font-medium bg-[var(--green-glow)] px-3 py-2 rounded-lg border border-green-500/20 animate-scale-in"><CheckCircle2 size={14} />{segSuccess}</div>}</div>)}
             </StageSection>
@@ -1080,7 +1347,7 @@ function DealCard({ deal, onSave, client, onLocalUpdate }: { deal: Deal; onSave:
 }
 
 // ═══ MAIN ═══
-export default function ClientDetail({ client, onBack, expandedNegocioId, onNegocioExpanded }: { client: Client; onBack: () => void; expandedNegocioId?: string; onNegocioExpanded?: () => void }) {
+export default function ClientDetail({ client, onBack, expandedNegocioId, onNegocioExpanded, userRol }: { client: Client; onBack: () => void; expandedNegocioId?: string; onNegocioExpanded?: () => void; userRol?: string }) {
   const [deals, setDeals] = useState<Deal[]>([]);
   const [loading, setLoading] = useState(true);
   const [apiOk, setApiOk] = useState(true);
@@ -1174,12 +1441,19 @@ export default function ClientDetail({ client, onBack, expandedNegocioId, onNego
   const [newDealAseguradoras, setNewDealAseguradoras] = useState<string[]>([]);
   const [creatingDeal, setCreatingDeal] = useState(false);
 
+  // Dropdown de ramos autocompletado
+  const { ramos: ramosUnicos, loading: ramosLoading } = useRamosUnicos();
+  const [showRamoDropdown, setShowRamoDropdown] = useState(false);
+  const [ramoDropdownIdx, setRamoDropdownIdx] = useState(-1);
+
   const toggleNewDealAseg = (aseg: string) => {
     setNewDealAseguradoras(prev => prev.includes(aseg) ? prev.filter(a => a !== aseg) : [...prev, aseg]);
   };
 
   const handleCreateDeal = async () => {
     if (!newDealTipo.trim()) return;
+    // Validación estricta: el ramo debe existir en el catálogo (no se permiten valores libres)
+    if (!ramosUnicos.includes(newDealTipo.trim().toUpperCase())) return;
     setCreatingDeal(true);
     try {
       await wf20({ action: "create", cedula: client.cedula, tipo_poliza: newDealTipo.trim(), aseguradora: newDealAseguradoras.length > 0 ? newDealAseguradoras.join(", ") : "Por definir", etapa: "contacto_inicial" });
@@ -1228,6 +1502,8 @@ export default function ClientDetail({ client, onBack, expandedNegocioId, onNego
       params.propuesta_archivo = JSON.stringify({ archivos, condiciones });
     }
     if (updates.propuesta_fecha !== undefined) params.propuesta_fecha = updates.propuesta_fecha;
+    if (updates.asesor !== undefined) params.asesor = updates.asesor;
+    if (updates.aseguradoras_config !== undefined) params.aseguradoras_config = JSON.stringify(updates.aseguradoras_config);
     if (updates.historial_cuotas !== undefined || updates.etapa_antes_perdido !== undefined || updates.endoso !== undefined || updates.cert_pago !== undefined || updates.documentos_cliente !== undefined) {
       const deal = deals.find(d => d.id === updates.id);
       const extras: Record<string, any> = {};
@@ -1303,7 +1579,7 @@ export default function ClientDetail({ client, onBack, expandedNegocioId, onNego
         </div>
         {loading ? (<div className="flex items-center justify-center py-12 gap-3 text-[var(--text-muted)]"><Loader2 size={20} className="animate-spin" /><span className="text-[15px]">Cargando negocios...</span></div>)
         : deals.length > 0 ? (<div className="space-y-4">
-          {deals.map(d => <div key={d.id} ref={el => { dealRefs.current[d.id] = el; }} className={`transition-all duration-700 rounded-2xl ${highlightNegocioId === d.id ? "ring-2 ring-[var(--accent)] ring-offset-2 ring-offset-[var(--bg)]" : ""}`}><DealCard deal={d} onSave={saveDeal} client={client} onLocalUpdate={(u) => setDeals(prev => prev.map(x => x.id === u.id ? { ...x, ...u } as Deal : x))} /></div>)}
+          {deals.map(d => <div key={d.id} ref={el => { dealRefs.current[d.id] = el; }} className={`transition-all duration-700 rounded-2xl ${highlightNegocioId === d.id ? "ring-2 ring-[var(--accent)] ring-offset-2 ring-offset-[var(--bg)]" : ""}`}><DealCard deal={d} onSave={saveDeal} client={client} onLocalUpdate={(u) => setDeals(prev => prev.map(x => x.id === u.id ? { ...x, ...u } as Deal : x))} userRol={userRol} /></div>)}
           <button onClick={() => setShowNewDeal(true)} className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 border-dashed border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--accent)] transition-all"><Plus size={16} /> Agregar otro negocio</button>
         </div>)
         : (<div className="flex flex-col items-center justify-center py-16 text-center">
@@ -1325,7 +1601,72 @@ export default function ClientDetail({ client, onBack, expandedNegocioId, onNego
             </div>
             <div>
               <label className="text-[11px] text-[var(--text-muted)] uppercase font-medium">Tipo de póliza *</label>
-              <input value={newDealTipo} onChange={e => setNewDealTipo(e.target.value)} placeholder="Ej: Autos, Vida, Hogar, SOAT..." className="w-full bg-[var(--surface-light)] border border-[var(--border)] rounded-xl px-4 py-3 text-[14px] outline-none mt-1 focus:border-[var(--accent)]" autoFocus onKeyDown={e => e.key === "Enter" && handleCreateDeal()} />
+              <div className="relative mt-1">
+                <input
+                  value={newDealTipo}
+                  onChange={e => { setNewDealTipo(e.target.value); setShowRamoDropdown(true); setRamoDropdownIdx(-1); }}
+                  onFocus={() => setShowRamoDropdown(true)}
+                  onBlur={() => setTimeout(() => setShowRamoDropdown(false), 200)}
+                  onKeyDown={e => {
+                    const filtered = ramosUnicos.filter(r => r.toUpperCase().includes(newDealTipo.trim().toUpperCase()));
+                    if (e.key === "ArrowDown") { e.preventDefault(); setRamoDropdownIdx(i => Math.min(i + 1, filtered.length - 1)); setShowRamoDropdown(true); }
+                    else if (e.key === "ArrowUp") { e.preventDefault(); setRamoDropdownIdx(i => Math.max(i - 1, -1)); }
+                    else if (e.key === "Enter") {
+                      e.preventDefault();
+                      if (ramoDropdownIdx >= 0 && filtered[ramoDropdownIdx]) {
+                        setNewDealTipo(filtered[ramoDropdownIdx]);
+                        setShowRamoDropdown(false);
+                      } else if (filtered.length === 1) {
+                        setNewDealTipo(filtered[0]);
+                        setShowRamoDropdown(false);
+                      }
+                    }
+                    else if (e.key === "Escape") { setShowRamoDropdown(false); }
+                  }}
+                  placeholder={ramosLoading ? "Cargando ramos..." : "Escribe para buscar o selecciona..."}
+                  className="w-full bg-[var(--surface-light)] border border-[var(--border)] rounded-xl px-4 py-3 text-[14px] outline-none focus:border-[var(--accent)]"
+                  autoFocus
+                  autoComplete="off"
+                />
+                {showRamoDropdown && (() => {
+                  const query = newDealTipo.trim().toUpperCase();
+                  const filtered = ramosUnicos.filter(r => query === "" || r.includes(query));
+                  if (ramosLoading) return null;
+                  return (
+                    <div className="absolute z-10 top-full left-0 right-0 mt-1 max-h-56 overflow-y-auto rounded-xl bg-[var(--surface)] border border-[var(--border)]" style={{ boxShadow: "0 10px 25px rgba(0,0,0,0.3)" }}>
+                      {ramosUnicos.length === 0 ? (
+                        <div className="px-4 py-3 text-[12px] text-[var(--red)] flex items-center gap-2">
+                          <AlertTriangle size={14} className="shrink-0" />
+                          <span>No hay ramos disponibles. Agrégalos en <strong>Editar</strong>.</span>
+                        </div>
+                      ) : filtered.length === 0 ? (
+                        <div className="px-4 py-3 text-[12px] text-[var(--red)] flex items-center gap-2">
+                          <AlertTriangle size={14} className="shrink-0" />
+                          <span>Ningún ramo coincide. Debes agregarlo primero en <strong>Editar</strong>.</span>
+                        </div>
+                      ) : (
+                        filtered.map((r, i) => (
+                          <button
+                            key={r}
+                            type="button"
+                            onMouseDown={e => e.preventDefault()}
+                            onClick={() => { setNewDealTipo(r); setShowRamoDropdown(false); }}
+                            className={`w-full text-left px-4 py-2.5 text-[13px] hover:bg-[var(--surface-light)] flex items-center gap-2 ${
+                              i === ramoDropdownIdx ? "bg-[var(--accent-glow)] text-[var(--accent)]" : "text-[var(--text-primary)]"
+                            }`}
+                          >
+                            <GitBranch size={12} className="text-[var(--purple)] shrink-0" />
+                            {r}
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  );
+                })()}
+              </div>
+              {!ramosLoading && ramosUnicos.length === 0 && (
+                <p className="text-[11px] text-[var(--red)] mt-1.5 flex items-center gap-1"><AlertTriangle size={11} />No hay ramos. Ve a Editar y agrega ramos primero.</p>
+              )}
             </div>
             <div>
               <label className="text-[11px] text-[var(--text-muted)] uppercase font-medium mb-2 block">Aseguradoras aliadas</label>
@@ -1351,7 +1692,7 @@ export default function ClientDetail({ client, onBack, expandedNegocioId, onNego
             </div>
             <div className="flex gap-3 pt-1">
               <button onClick={() => { setShowNewDeal(false); setNewDealTipo(""); setNewDealAseguradoras([]); }} className="flex-1 px-4 py-3 rounded-xl text-[13px] font-medium border border-[var(--border)] text-[var(--text-muted)]">Cancelar</button>
-              <button onClick={handleCreateDeal} disabled={creatingDeal || !newDealTipo.trim()} className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-[13px] font-semibold text-white disabled:opacity-50" style={{ background: "linear-gradient(135deg, var(--accent), var(--accent-dark))" }}>
+              <button onClick={handleCreateDeal} disabled={creatingDeal || !newDealTipo.trim() || !ramosUnicos.includes(newDealTipo.trim().toUpperCase())} className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-[13px] font-semibold text-white disabled:opacity-50" style={{ background: "linear-gradient(135deg, var(--accent), var(--accent-dark))" }}>
                 {creatingDeal ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
                 {creatingDeal ? "Creando..." : "Crear Negocio"}
               </button>

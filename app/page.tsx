@@ -164,7 +164,7 @@ export default function Home() {
           {error && <div className="mb-4 px-4 py-3 rounded-xl bg-[var(--red-glow)] border border-red-500/30 text-[var(--red)] text-sm">⚠️ {error}</div>}
           {activeTab === "dashboard" && <FileExplorer />}
           {activeTab === "clients" && !selectedClient && <ClientsTable clients={clients} searchQuery={searchQuery} loading={loading} onSelectClient={setSelectedClient} />}
-          {activeTab === "clients" && selectedClient && <ClientDetail client={selectedClient} onBack={() => { setSelectedClient(null); setExpandedNegocioId(undefined); }} expandedNegocioId={expandedNegocioId} onNegocioExpanded={() => setExpandedNegocioId(undefined)} />}
+          {activeTab === "clients" && selectedClient && <ClientDetail client={selectedClient} onBack={() => { setSelectedClient(null); setExpandedNegocioId(undefined); }} expandedNegocioId={expandedNegocioId} onNegocioExpanded={() => setExpandedNegocioId(undefined)} userRol={user.rol} />}
           {activeTab === "pipeline" && <PipelineBoard clients={clients} onSelectClient={(c) => { setSelectedClient(c); setActiveTab("clients"); }} />}
           {activeTab === "negocios" && <BusinessTracker clients={clientsFull.length > 0 ? clientsFull : clients} />}
           {activeTab === "formularios" && <FormulariosAdmin />}
